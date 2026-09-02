@@ -1,0 +1,102 @@
+# ── Python ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ── 虚拟环境 ────────────────────────────────────────
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# ── IDE / 编辑器 ────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── 大文件：模型权重 ─────────────────────────────────
+*.pt
+*.pth
+*.onnx
+*.engine
+*.bin
+*.safetensors
+*.gguf
+*.pkl
+*.h5
+*.hdf5
+*.ckpt
+*.pb
+
+# ── 大文件：视频 ─────────────────────────────────────
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.wmv
+*.webm
+*.m4v
+
+# ── 大文件：数据集图片（可选，如需版本控制请注释）──────
+# 数据/
+# Demiurge/datasets/
+
+# ── 大文件：wheel 安装包 ─────────────────────────────
+*.whl
+
+# ── 大文件：exe 打包产物 ─────────────────────────────
+*.exe
+*.dll
+*.lib
+*.pyd
+
+# ── 日志 / 临时文件 ──────────────────────────────────
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+nohup.out
+
+# ── 训练产物（可选，如需保留best.pt请单独处理）────────
+# runs/
+
+# ── 压缩包 ───────────────────────────────────────────
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.bz2
+
+# ── 整个目录排除 ──────────────────────────────────────
+NeiKos496_生产端/
+数据/
+Demiurge/datasets/
+Demiurge/runs/train/*/weights/
+Demiurge/models/
+Demiurge/wheels/
+Demiurge/venv/

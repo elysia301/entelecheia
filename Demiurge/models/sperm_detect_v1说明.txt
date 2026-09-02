@@ -1,0 +1,25 @@
+sperm_detect_v1.pt 模型档案
+============================
+
+来源: runs/train/yolov8s_first/weights/best.pt (第 72 轮最优权重)
+固化时间: 2026-08-27 10:04
+
+训练配置
+--------
+模型: YOLOv8s (预训练 COCO)
+训练数据: 68 张 train / 10 张 val (人工核验标签, 单类别 object)
+轮数: 100 (best.pt 在第 72 轮)
+imgsz: 640 | batch: 8 | seed: 0 | 早停 patience: 30
+
+成绩 (验证集)
+--------
+mAP50:     0.4808
+Precision: 0.5533
+Recall:    0.5540
+mAP50-95:  0.1291
+
+说明
+--------
+- 这是 v1 基准模型, 用于对比后续版本进步
+- 后续新模型请命名 v2/v3..., 勿覆盖本文件
+- 用模型推理: venv\Scripts\python.exe -c "from ultralytics import YOLO; m=YOLO(r'models/sperm_detect_v1.pt'); m.predict(source=r'你的图片目录', save=True, conf=0.25)"

@@ -1,0 +1,75 @@
+{
+  "active_camera": {
+    "name": "HY-500B",
+    "vendor_id": "0AC8",
+    "product_id": "3420",
+    "hardware_id": "USB\\VID_0AC8&PID_3420&MI_00",
+    "backend": "MSMF",
+    "opencv_index_note": "推荐使用MSMF后端 (cv2.CAP_MSMF)，全分辨率可达30fps；DSHOW后端高分辨率仅1-5fps，不推荐",
+    "max_resolution": {
+      "width": 2048,
+      "height": 1536,
+      "label": "3MP (MSMF)",
+      "fps": 29.9,
+      "note": "5MP(2592x1944)在MSMF下不支持，自动降为3MP；DSHOW下支持5MP但仅1fps"
+    },
+    "recommended_resolution": {
+      "width": 1920,
+      "height": 1080,
+      "label": "1080p",
+      "fps": 30.2,
+      "reason": "1080p满帧30fps，分辨率与帧率最佳平衡，适合精子检测录制"
+    },
+    "resolutions": [
+      {"width": 2592, "height": 1944, "label": "5MP", "fps": 1.0, "backend": "DSHOW", "usable": false, "note": "MSMF不支持，DSHOW仅1fps"},
+      {"width": 2048, "height": 1536, "label": "3MP", "fps": 29.9, "backend": "MSMF", "usable": true},
+      {"width": 1920, "height": 1080, "label": "1080p", "fps": 30.2, "backend": "MSMF", "usable": true},
+      {"width": 1600, "height": 1200, "label": "UXGA", "fps": 30.0, "backend": "MSMF", "usable": true},
+      {"width": 1280, "height": 960, "label": "SXGA", "fps": 29.8, "backend": "MSMF", "usable": true},
+      {"width": 1280, "height": 720, "label": "720p", "fps": 30.2, "backend": "MSMF", "usable": true},
+      {"width": 800, "height": 600, "label": "SVGA", "fps": 29.9, "backend": "MSMF", "usable": true},
+      {"width": 640, "height": 480, "label": "VGA", "fps": 30.2, "backend": "MSMF", "usable": true}
+    ],
+    "adjustable_properties": {
+      "brightness": true,
+      "contrast": true,
+      "saturation": true,
+      "gain": true,
+      "exposure": "auto_only",
+      "white_balance": "auto"
+    },
+    "current_properties": {
+      "brightness": 0,
+      "contrast": 32,
+      "saturation": 60,
+      "gain": 0,
+      "exposure": -6,
+      "white_balance": -1
+    },
+    "notes": [
+      "MSMF后端所有标准分辨率(640x480~2048x1536)均可达30fps满帧",
+      "5MP(2592x1944)在MSMF下不支持，会自动降为2048x1536",
+      "DSHOW后端高分辨率帧率极低(1-5fps)，仅640x480可达23.6fps，不推荐使用",
+      "亮度/对比度/饱和度/增益可通过OpenCV属性接口调节",
+      "录制推荐使用1920x1080@30fps (MSMF后端)"
+    ]
+  },
+  "previous_camera": {
+    "name": "USB2_5M_YF",
+    "vendor_id": "04B4",
+    "product_id": "C501",
+    "note": "已更换，此为对比参考"
+  },
+  "ignored_cameras": [
+    {
+      "name": "HP Wide Vision HD Camera",
+      "vendor_id": "30C9",
+      "product_id": "0069",
+      "hardware_id": "USB\\VID_30C9&PID_0069&MI_00",
+      "reason": "笔记本内置摄像头，状态Error无法使用，后续检测自动忽略",
+      "ignore": true
+    }
+  ],
+  "record_time": "2026-09-01",
+  "version": "2.0"
+}

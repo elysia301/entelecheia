@@ -1,0 +1,146 @@
+YOLOv8s 精子检测训练 —— 详细操作步骤
+========================
+
+  项目位置: C:\Users\86137\Desktop\entelecheia\Demiurge
+  数据集: 78 张人工核验图（train 68 / val 10），单类别 object
+  环境: Python 3.13 venv | torch 2.6.0+cu124 | RTX 3050 Laptop 4GB
+
+0. 当前数据状态（已就绪，无需再动）
+
+   位置 | 内容 | 状态
+   datasets/dataset/images/train + labels/train | 68 张图 + 68 标签 | ✅ 已就绪
+   datasets/dataset/images/val + labels/val | 10 张图 + 10 标签 | ✅ 已就绪
+   data.yaml | 路径已修正为当前项目 | ✅ 已修正
+   venv/ + yolov8s.pt | 虚拟环境 + 预训练权重 | ✅ 已就绪
+
+  数据来源: C:\Users\86137\Desktop\entelecheia\数据\已验证坐标（78 个人工核验标签，
+  其中 68 张在 train，10 张保留为 val。原始数据未动，均为复制/移动）。
+
+1. 验证环境（每次换机/报错后先跑）
+
+  [命令行代码]
+cd /d C:\Users\86137\Desktop\entelecheia\Demiurge
+venv\Scripts\python.exe verify_env.py
+
+预期输出（四步全过）：
+
+  [命令行代码]
+[1/4] Python 3.13.14 OK
+[2/4] torch 2.6.0+cu124 导入 OK
+      CUDA 12.4 可用, GPU: NVIDIA GeForce RTX 3050 Laptop GPU
+      GPU 矩阵乘冒烟测试 OK
+[3/4] ultralytics 8.4.129 导入 OK
+[4/4] yolov8s.pt 本地加载 OK
+全部通过 —— 环境就绪
+
+2. 启动训练
+
+直接跑（使用 train.py 默认参数）：
+
+  [命令行代码]
+venv\Scripts\python.exe train.py
+
+当前 train.py 参数说明（4GB 显存适配）：
+
+   参数 | 当前值 | 说明
+   model | yolov8s.pt | 本地预训练权重，已就位，无需联网
+   data | data.yaml | 数据集配置（路径已修正）
+   epochs | 100 | 78 张数据量小，100 轮够用；可随时 Ctrl+C 早停
+   imgsz | 640 | 若 OOM 可降到 480（省显存、稍降精度）
+   batch | 8 | 4GB 显存实测 batch=8 约 2G 显存，最稳；OOM 时降到 4
+   patience | 30 | 验证指标 30 轮无提升则自动早停
+   workers | 2 | Windows 建议 ≤2，避免数据加载卡死
+   device | 0 | GPU 0（RTX 3050）
+   project/name | runs/train/yolov8s_first | 输出目录（已改为绝对路径，避免相对路径多套一层）
+
+  ✅ 已实测验证：训练链路已跑通（68 张 train → GPU 训练 → 10 张 val 验证），
+  显存峰值仅 ~1.1G（batch=4），1 epoch 仅需约 5 秒。直接运行 train.py 即可。
+
+正常训练日志长这样：
+
+  [命令行代码]
+      Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances   Size
+      1/100     2.14G     1.352      2.481      1.202        120     640
+      2/100     2.14G     1.298      2.241      1.161        118     640
+      ...
+- 每轮约几十秒到 1-2 分钟（68 张 train，速度很快）
+- GPU_mem 稳定在 ~2.1-2.2G 说明 4GB 够用；若报 CUDA OOM 则降 batch
+
+3. 训练中如何看进度
+
+   方法 | 操作
+   看终端日志 | 每轮输出 loss / GPU 显存占用
+   实时指标曲线 | 打开 runs\train\yolov8s_first\results.png（会自动更新）
+   训练结束标志 | 出现 100 epochs completed 或早停 Stopping training early
+
+  建议开一个资源管理器窗口，盯着 runs\train\yolov8s_first\ 目录，训练中会不断生成
+  指标图、验证集预测图、混淆矩阵等。
+
+4. 训练完成后的输出（重点看这些）
+
+训练结束后 runs\train\yolov8s_first\ 下的关键文件：
+
+   文件 | 用途
+   weights/best.pt | 最终模型（验证集指标最好的权重，部署用它）
+   weights/last.pt | 最后一轮权重（一般用 best.pt）
+   results.png | 损失/精度/mAP 曲线总览
+   confusion_matrix.png | 混淆矩阵（看漏检/误检）
+   val_batch0_pred.jpg | 验证集预测可视化（红框是否压准）
+   args.yaml | 本次训练的全部超参数存档
+   results.csv | 每轮指标数值（可用 Excel 打开）
+
+关键指标怎么读：
+
+   指标 | 含义 | 好模型参考
+   mAP50 | IoU=0.5 下的平均精度 | >0.85 很好，>0.7 可用
+   mAP50-95 | 严格精度（IoU 0.5~0.95 平均） | 小目标低一些正常
+   precision | 框出的目标有多少是准的 | 高=误检少
+   recall | 真目标被框出多少 | 高=漏检少
+
+  ⚠️ 78 张数据是最小可跑通量，mAP 偏低属正常。想提升精度 → 见第 6 节数据扩充。
+
+5. 用训练好的模型做推理
+
+  [命令行代码]
+venv\Scripts\python.exe -c "from ultralytics import YOLO; m=YOLO(r'runs/train/yolov8s_first/weights/best.pt'); m.predict(source=r'C:\Users\86137\Desktop\entelecheia\数据\images222', save=True, conf=0.25, imgsz=640)"
+
+- source 换成你要检测的图片目录或单张图
+- conf=0.25：置信度阈值，漏检多就降到 0.15，误检多就升到 0.4
+- 结果输出到 runs/detect/predict/（带框的图）
+
+6. 数据扩充（精度提升的关键，推荐做）
+
+当前只有 78 张核验数据，train 68 张（偏少），模型学得不够。扩充路线：
+
+1. 核验更多标注：C:\Users\86137\Desktop\entelecheia\数据 下用 标注工具\人工辅助数据核查工具.py
+   把剩余图片核验完，未验证坐标 里的标签人工确认后移入 已验证坐标
+2. 增量导入：把新核验的图+标签复制进 train（脚本见下），然后重新训练
+3. 训练验证：数据翻倍后重新训练，观察 mAP50 是否提升
+
+增量导入脚本（在项目目录运行）：
+
+  [命令行代码]
+venv\Scripts\python.exe -c "import shutil, pathlib as P; src=P.Path(r'C:\Users\86137\Desktop\entelecheia\数据\已验证坐标'); imgs=P.Path(r'C:\Users\86137\Desktop\entelecheia\数据\images'); dt=P.Path('datasets/dataset'); val={p.stem for p in dt.joinpath('images/val').glob('*.png')}; tr={p.stem for p in dt.joinpath('images/train').glob('*.png')}; n=0
+for t in src.glob('*.txt'):
+    if t.stem in val|tr: continue
+    i=imgs/f'{t.stem}.png'
+    if i.exists(): shutil.copy2(i, dt/'images/train'/i.name); shutil.copy2(t, dt/'labels/train'/t.name); n+=1
+print(f'新导入 {n} 张到 train')"
+
+  目标规模参考：单类目标检测，300 张以上核验数据训练效果才会比较稳。
+
+7. 常见故障速查
+
+   现象 | 原因 | 处置
+   CUDA out of memory | 4GB 显存不够 | batch 16→8→4，或 imgsz 640→480
+   AssertionError: train set is empty | train 目录无图片 | 确认 datasets/dataset/images/train 有图（现已就绪）
+   FileNotFoundError ... Desktop\shit | data.yaml 还指旧路径 | 已修正；若再报，检查 data.yaml 第 10 行 path
+   No labels found in ... train | 标签没放进 labels/train | 确认同名 .txt 与图片成对
+   训练中途想停 | 数据太少不必等满 100 轮 | Ctrl+C 停止，last.pt 仍会保存
+   每轮很慢 | workers 太多/CPU 瓶颈 | workers 保持 2，检查 GPU 占用是否 >90%
+
+8. 一句话流程总结
+
+  [命令行代码]
+verify_env.py（环境）→ train.py（训练）→ 看 runs/train/yolov8s_first/results.png（评估）
+→ best.pt 预测（部署）→ 核验更多数据扩充 → 再训练（迭代）

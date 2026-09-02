@@ -1,0 +1,18 @@
+# YOLOv8s 训练数据集配置 (data.yaml)
+# 请按你的实际数据修改路径。train/val 指向"图片所在目录"（YOLO 会自动在同级 labels/ 找标签）。
+# 若使用之前诊断过的 Desktop\shit\数据 数据集，请参考下方注释示例。
+
+# 类别列表（按你的任务实际类别修改，顺序需与标签文件中的 class id 一一对应）
+names:
+  0: object
+
+# 数据集根路径（建议用绝对路径，Windows 下用正斜杠）
+path: C:/Users/86137/Desktop/entelecheia/Demiurge/datasets
+
+train: dataset/images/train
+val: dataset/images/val
+
+# 可选：若你已有独立测试集
+# test: dataset/images/test
+
+# nc 由 names 自动推导，无需手填
