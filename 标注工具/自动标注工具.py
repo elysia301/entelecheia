@@ -32,7 +32,7 @@ IMGSZ_OPTIONS = [640, 960, 1280, 1920]  # UI下拉可选分辨率列表
 IOU_THRESH = 0.1     # 推理框与已有红框IoU超过此值 → 自动删除该黄框及其坐标（视为已标注，不作为新增）
 REDUP_IOU_THRESH = 0.5  # 红框与红框IoU超过此值 → 删除重复红框（NMS式去重，保留面积较大的框）
 MAX_AUTO_NEW_BOXES = 40  # 自动批量安全阈值：已有坐标文件的图片，单次新增黄框≥此值 → 判定为异常误检，跳过不保存
-DEFAULT_AUTO_DELAY = 200  # 自动批量模式翻页延时（毫秒），可在UI中调节
+DEFAULT_AUTO_DELAY = 0    # 自动批量模式翻页延时（毫秒），0=无延时最快速度，UI中可调节
 DEFAULT_CONF = 0.25   # 默认置信度阈值
 HIT_RADIUS_PX = 12    # 点击命中半径（像素）
 
@@ -346,7 +346,9 @@ class AutoLabelEditor:
         return self.label_dir / f"{img_path.stem}.txt"
 
     # ── 加载单张图片 ──
-    def load_index(self, i: int) -> None:
+    def load_index(self, i: int, skip_ui: bool = False) -> None:
+        """加载第i张图片：读取图片→读取标签→红红去重→模型推理→黄红去重
+        skip_ui=True时跳过状态更新和画布重绘（自动批量模式提速用）"""
         if not self.images:
             self.nav_label.config(text="目录中没有图片")
             self.img = None
@@ -376,8 +378,9 @@ class AutoLabelEditor:
         self._run_inference()
         self.deleted_pred.clear()
         self.dirty = False
-        self.update_status()
-        self.redraw()
+        if not skip_ui:
+            self.update_status()
+            self.redraw()
 
     def _run_inference(self) -> None:
         """对当前图片推理，过滤掉与已有框IoU过高的检测（视为已标注）"""
@@ -445,8 +448,8 @@ class AutoLabelEditor:
         if not (0.0 <= iou_gg <= 1.0):
             messagebox.showwarning("输入错误", "红红IoU阈值范围 0~1")
             return
-        if not (10 <= auto_delay <= 10000):
-            messagebox.showwarning("输入错误", "翻页延时范围 10~10000 毫秒")
+        if not (0 <= auto_delay <= 10000):
+            messagebox.showwarning("输入错误", "翻页延时范围 0~10000 毫秒（0=最快无延时）")
             return
         if imgsz not in IMGSZ_OPTIONS:
             messagebox.showwarning("输入错误", f"推理分辨率必须是 {IMGSZ_OPTIONS} 之一")
@@ -716,7 +719,7 @@ class AutoLabelEditor:
                 'reason': '新建文件' if not has_gt_file else '覆写文件',
             })
 
-        self.update_status()
+        # 状态更新已在 load_index 中完成，此处不再重复调用
 
         if self.idx >= len(self.images) - 1:
             self.auto_mode = False
@@ -725,6 +728,7 @@ class AutoLabelEditor:
             return
 
         self.idx += 1
+        # 正常加载下一张（含UI渲染，避免看起来像卡住）
         self.load_index(self.idx)
 
         self.root.after(self.auto_delay, self.auto_step)

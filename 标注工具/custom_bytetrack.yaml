@@ -1,0 +1,9 @@
+# 自定义 bytetrack 跟踪器配置（宽容模式）
+# 自动生成，请勿手动修改
+tracker_type: bytetrack
+track_high_thresh: 0.14
+track_low_thresh: 0.06
+new_track_thresh: 0.14
+track_buffer: 47
+match_thresh: 0.29
+fuse_score: true

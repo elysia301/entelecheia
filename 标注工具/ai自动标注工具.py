@@ -32,7 +32,7 @@ from openai import OpenAI
 
 # ── 固定配置参数 ──────────────────────────────────────────────────────
 API_KEY = "ark-8429b160-1929-415c-a7a7-c4e2621039c9-17c3d"
-EP_ID = "ep-20260827141848-pxc85"
+EP_ID = "ep-m-20260704143132-zn5m2"
 BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 # 图片预期尺寸（仅作校验，实际以读取为准）
@@ -45,6 +45,10 @@ FIXED_BOX_H = 0.015625
 
 # 去重IOU阈值：超过则视为重复框
 IOU_THRESHOLD = 0.3
+# 核查模式只删减时，单张删除数量超过此阈值判定为AI坐标偏移，跳过保存防误删
+MAX_REMOVE_THRESHOLD = 20
+# 核查模式AI输出框与原有框匹配IoU阈值，超过视为AI确认保留
+REVIEW_MATCH_IOU = 0.3
 # 目标数异常告警阈值
 MIN_TARGETS = 5
 MAX_TARGETS = 80
@@ -370,22 +374,22 @@ def generate_annotate_prompt(img_w: int, img_h: int) -> str:
 
 def generate_review_prompt(img_w: int, img_h: int,
                             existing_boxes: list[tuple[int, float, float, float, float]]) -> str:
-    """AI核查模式提示词：基于已有坐标修正错误、补全遗漏"""
+    """AI核查模式提示词（只删减不新增版）：仅审核已有标注，删除错误框，不新增任何坐标"""
     box_px = round(FIXED_BOX_W * img_w)
     existing_text = format_existing_labels_for_prompt(existing_boxes, img_w, img_h)
     if existing_boxes:
-        existing_section = f"""【已有标注（待审核）】
+        existing_section = f"""【已有标注（待审核，仅删减不新增）】
 共 {len(existing_boxes)} 个已有标注：
-{existing_text}"""
+{existing_text}
+
+⚠️ 核心约束：你只需要从以上已有标注中选择保留哪些、删除哪些。
+绝对禁止新增任何不在上述列表中的坐标！即使画面中存在未标注的精子，也不要新增。"""
     else:
         existing_section = f"""【已有标注（待审核）】
 共 0 个已有标注（无已有坐标文件或文件为空）。
 
-⚠️ 重要提示：此图片可能是空画面（无任何精子头部），也可能是遗漏了全部标注的含精子画面。
-请你仔细扫描全图后判断：
-- 如果画面中确实没有任何精子头部（仅有背景、杂质、气泡、划痕），判定为空画面，输出空内容（0行）
-- 如果画面中存在精子头部，必须补全全部标注，且数量应 ≥ 20 个"""
-    return f"""你是一名专业的精子头部标注审核工程师，审核精度要求≥99.5%。图片中已有初步标注坐标，请你审核并修正：删除错误标注、修正偏移坐标、补全遗漏的精子头部，输出完整的修正后YOLO格式坐标。
+⚠️ 无已有标注时，直接输出空内容（0行），不进行任何新增标注。"""
+    return f"""你是一名专业的精子头部标注审核工程师，审核精度要求≥99.5%。图片中已有初步标注坐标，请你审核并**仅删除错误标注**，不进行任何新增。
 
 【图像信息（最高优先级约束）】
 - 当前图像尺寸固定为 {img_w}×{img_h} 像素，正方形，无黑边、无padding、无letterbox
@@ -401,41 +405,12 @@ def generate_review_prompt(img_w: int, img_h: int,
 
 {existing_section}
 
-【审核任务】
-1. 检查每个已有标注是否准确：中心点是否落在精子头部几何中心，是否有偏移到尾部/边缘/杂质
-2. 删除错误标注：标注在杂质、气泡、尾部、空白区域的框必须删除
-3. 修正偏移标注：中心点偏移的框，修正到头部几何中心
-4. 补全遗漏精子：图片中存在但未标注的精子头部必须补全
-5. 保留正确标注：位置准确的框直接保留
-
-【数据集先验约束（最高优先级，必须严格遵守）】
-本数据集具有以下已知分布特征，审核时必须以此为先验判断依据：
-
-1. **含精子画面的数量下限**：
-   - 凡是画面中存在精子头部的图片，其精子头部数量必然 ≥ 20 个
-   - 不会出现只有 1~19 个精子的稀疏画面
-   - 因此，如果你审核后输出 1~19 个框，必须高度警惕：极有可能发生了严重漏检，应重新扫描全图补全遗漏
-   - 只有两种合法输出数量：0 个（空画面）或 ≥ 20 个（含精子画面）
-
-2. **空画面的存在与处理**：
-   - 本数据集中存在空画面：即画面中没有任何精子头部，仅有背景纹理、杂质、气泡、划痕、尘埃等
-   - 空画面的判断标准：仔细扫描全图，确认不存在任何椭圆形/梨形、大小约10像素的精子头部结构
-   - 空画面必须输出空坐标文件（即输出内容为空，0行YOLO标签），不能输出任何框
-   - 如果已有标签文件中存在标注，但画面实际为空画面，必须删除全部已有标注，输出空文件
-   - 空画面是数据集的正常组成部分，输出空坐标文件是正确行为，不是漏检
-
-3. **数量异常的自查流程**：
-   - 输出前必须统计最终框的数量
-   - 若数量为 0：确认画面确实为空画面（无任何精子头部），则输出空文件
-   - 若数量为 1~19：判定为异常，必须重新全图扫描，找出遗漏的精子头部，直到数量 ≥ 20 或确认画面为空（数量=0）
-   - 若数量 ≥ 20：正常输出
-
-【禁止事项】
-- 禁止输出像素坐标（如 160 480）
-- 禁止输出 0~1000 或 0~100 量纲的坐标
-- 禁止输出框的左上角/右下角坐标，xc yc 必须是头部几何中心
-- 禁止 y 轴翻转（原点在左上，不在左下）
-- 禁止保留错误标注或遗漏真实精子头部
+【审核任务（仅删减，绝对禁止新增）】
+1. 逐个检查每个已有标注是否准确：中心点是否落在精子头部几何中心
+2. **删除错误标注**：标注在杂质、气泡、尾部、空白区域、重复标注的框必须删除
+3. **保留正确标注**：位置准确、确实在精子头部上的框直接保留，坐标可微调修正到几何中心
+4. ❌ **绝对禁止新增**：画面中存在但未标注的精子头部，不要新增，忽略它们
+5. ❌ **输出必须是已有标注的子集**：最终输出的每个框都必须能在已有标注列表中找到对应项
 
 【目标定义】
 - 目标：精子头部，呈椭圆形/梨形，大小约{box_px}像素
@@ -444,18 +419,18 @@ def generate_review_prompt(img_w: int, img_h: int,
 
 【审核规则】
 1. 每个精子头部只保留一个框，中心点严格落在头部几何中心
-2. 必须检出全部真实目标，优先保证召回率，禁止漏检
-3. 禁止将杂质、噪点误判为精子头部（已有标注中的错误框必须删除）
-4. 同一个头部禁止重复标注
-5. 输出的是修正后的完整坐标列表，不是增量（包含保留的+修正的+新增的全部框）
+2. 错误标注必须删除（标注在杂质/尾部/空白处的框）
+3. 重复标注必须删除（同一个头部有多个框时只保留最准确的一个）
+4. 输出的是保留下来的完整坐标列表（原有标注的子集）
+5. 坐标可微调修正到头部几何中心，但禁止新增不存在于已有列表中的坐标
 
 【推理步骤（输出前逐条自查）】
-1. 先在原始 {img_w}×{img_h} 像素坐标系中，逐个核对已有标注的像素位置是否准确
-2. 标记需要删除的错误框、需要修正的偏移框
-3. 扫描全图，找出未标注的精子头部
-4. 汇总：保留正确框 + 修正偏移框 + 新增遗漏框，删除错误框
-5. 将所有框的像素坐标除以 {img_w} 和 {img_h}，得到 0~1 归一化坐标
-6. 自查：最靠左的精子 xc 应接近 0，最靠右的接近 1，最上方的 yc 接近 0，最下方的接近 1
+1. 先在原始 {img_w}×{img_h} 像素坐标系中，逐个核对已有标注的像素位置
+2. 标记需要删除的错误框、需要微调的偏移框
+3. ❌ 不要扫描未标注区域，不要寻找遗漏的精子头部
+4. 汇总：保留正确框 + 微调偏移框，删除错误框（不新增任何框）
+5. 将保留框的像素坐标除以 {img_w} 和 {img_h}，得到 0~1 归一化坐标
+6. 自查：输出数量 ≤ 已有标注数量，每个输出框都能在已有列表中找到对应
 
 【输出格式】
 每一行严格为：0 xc yc 0.015625 0.015625
@@ -463,10 +438,11 @@ def generate_review_prompt(img_w: int, img_h: int,
 - 框宽高固定为0.015625，不可修改
 
 【输出要求】
-- 仅输出修正后的完整YOLO标签行，不要任何解释、说明、开场白、结束语、代码块标记
-- 按从上到下顺序输出，确保无遗漏
-- 如果图片为空画面（无任何精子头部），输出空内容（0行），这是正确行为，不是漏检
-- 含精子画面的输出数量必须 ≥ 20，1~19 个属于异常，需重新扫描补全
+- 仅输出保留下来的YOLO标签行，不要任何解释、说明、开场白、结束语、代码块标记
+- 按从上到下顺序输出
+- 无已有标注时输出空内容（0行）
+- 全部已有标注都错误时输出空内容（0行）
+- ❌ 输出数量必须 ≤ 已有标注数量，禁止新增
 """
 
 
@@ -867,7 +843,52 @@ def process_single_review(img_path: Path, src_label_dir: Path, out_label_dir: Pa
         # 生成核查提示词（包含已有坐标，空标签时提示判断空画面）
         review_prompt = generate_review_prompt(w_img, h_img, existing_boxes)
         raw_output = call_model(b64_data, w_img, h_img, img_path.name, prompt=review_prompt)
-        valid_lines = clean_yolo_output(raw_output, w_img, h_img)
+        ai_lines = clean_yolo_output(raw_output, w_img, h_img)
+
+        # ── 只删减不新增：IoU匹配后处理 ──
+        # 将AI输出的坐标与原有坐标匹配，只保留被AI确认的原有坐标
+        # 即使AI输出了新增坐标，也会因无法匹配原有坐标而被过滤
+        kept_boxes = []
+        matched_existing = set()
+        for ai_line in ai_lines:
+            parts = ai_line.split()
+            if len(parts) != 5:
+                continue
+            ai_cls = int(float(parts[0]))
+            ai_xc, ai_yc = float(parts[1]), float(parts[2])
+            # 找最匹配的原有框
+            best_iou = 0.0
+            best_idx = -1
+            for idx, (ex_cls, ex_xc, ex_yc, ex_w, ex_h) in enumerate(existing_boxes):
+                if idx in matched_existing:
+                    continue
+                iou = compute_iou(ai_xc, ai_yc, FIXED_BOX_W, FIXED_BOX_H,
+                                  ex_xc, ex_yc, ex_w, ex_h)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = idx
+            if best_idx >= 0 and best_iou >= REVIEW_MATCH_IOU:
+                # AI确认保留此原有坐标，使用AI微调后的坐标
+                matched_existing.add(best_idx)
+                kept_boxes.append(f"{ai_cls} {ai_xc:.6f} {ai_yc:.6f} {FIXED_BOX_W:.6f} {FIXED_BOX_H:.6f}")
+
+        valid_lines = kept_boxes
+        num_removed = len(existing_boxes) - len(valid_lines)
+        if num_removed > 0 or len(ai_lines) != len(valid_lines):
+            safe_print(f"  🧹 {img_path.name}: 只删减模式 - 原有{len(existing_boxes)} → "
+                       f"保留{len(valid_lines)}，删除{num_removed}，"
+                       f"过滤AI新增{len(ai_lines)-len(valid_lines)}个")
+
+        # ── 坐标偏移检测：删除超过阈值判定为AI坐标偏移，跳过保存防误删 ──
+        if existing_boxes and num_removed > MAX_REMOVE_THRESHOLD:
+            safe_print(f"  ⚠️ {img_path.name}: 删除{num_removed}个 > 阈值{MAX_REMOVE_THRESHOLD}，"
+                       f"判定为AI坐标偏移，跳过保存，原坐标文件保持不变")
+            append_error_log(error_log_path, stem,
+                           f"坐标偏移检测: 删除{num_removed}个 > 阈值{MAX_REMOVE_THRESHOLD}，"
+                           f"判定为AI坐标偏移，已跳过保存（原有{len(existing_boxes)}个）")
+            return True, len(existing_boxes), (
+                f"⚠️ 跳过: 删除{num_removed}个 > 阈值{MAX_REMOVE_THRESHOLD}，"
+                f"判定为AI坐标偏移，原坐标不变")
 
         # 保存修正后的标签（包括空文件）
         out_label_dir.mkdir(parents=True, exist_ok=True)
@@ -884,20 +905,14 @@ def process_single_review(img_path: Path, src_label_dir: Path, out_label_dir: Pa
 
         num_final = len(valid_lines)
 
-        # 状态与异常判断（基于数据集先验：0=空画面正常，1~19=异常告警，≥20=正常）
-        if num_final == 0:
-            status = "核查完成: 判定为空画面，输出空坐标文件"
-        elif num_final < 20:
-            num_added = max(0, num_final - len(existing_boxes))
-            num_removed = max(0, len(existing_boxes) - num_final)
-            status = (f"核查完成: 原有{len(existing_boxes)} → 最终{num_final} "
-                     f"(新增{num_added}, 删除{num_removed}) ⚠️数量异常(<20，可能漏检)")
-            append_error_log(error_log_path, stem,
-                           f"核查后数量异常(<20): {num_final}，可能存在漏检或非空画面误判为空")
+        # 状态与异常判断（只删减不新增模式）
+        if not existing_boxes:
+            status = "核查完成: 无已有标注，输出空坐标文件"
+        elif num_final == 0:
+            status = f"核查完成: 原有{len(existing_boxes)} → 全部删除(0)，判定为全错误或空画面"
         else:
-            num_added = max(0, num_final - len(existing_boxes))
-            num_removed = max(0, len(existing_boxes) - num_final)
-            status = f"核查完成: 原有{len(existing_boxes)} → 最终{num_final} (新增{num_added}, 删除{num_removed})"
+            num_removed = len(existing_boxes) - num_final
+            status = f"核查完成: 原有{len(existing_boxes)} → 保留{num_final}，删除{num_removed}（只删减不新增）"
 
         if warning:
             status += f"（{warning}）"
