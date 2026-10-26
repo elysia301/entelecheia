@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import os
+import random
 import re
 import sys
 import time
@@ -36,12 +37,21 @@ EP_ID = "ep-m-20260704143132-zn5m2"
 BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 # 图片预期尺寸（仅作校验，实际以读取为准）
-EXPECT_W, EXPECT_H = 1280, 1280
+EXPECT_W, EXPECT_H = 3840, 2160
 # 顶部黑边过滤阈值：yc小于该值丢弃，无黑边图片设为0.0
 BLACK_TOP_THRESHOLD = 0.0
-# 框宽高固定值（标准YOLO格式）
+# 框目标边长（像素）：在像素上保持约 BOX_PIXEL 见方，归一化值随图像分辨率自适应。
+# 1280x1280 时 = 20/1280 = 0.015625（与旧版完全一致）；
+# 3840x2160 时自动变为约 20x20 像素，避免框比目标大好几倍。
+BOX_PIXEL = 20.0
+# 旧版固定归一化框（仅作参考，实际按图像尺寸自适应计算）
 FIXED_BOX_W = 0.015625
 FIXED_BOX_H = 0.015625
+
+def box_dims_for(img_w: int, img_h: int) -> tuple[float, float]:
+    """按实际图像尺寸计算归一化框宽高，使框在像素上保持约 BOX_PIXEL 见方。
+    返回 (w_norm, h_norm)，16:9 图上为像素正方形而非拉伸矩形。"""
+    return BOX_PIXEL / img_w, BOX_PIXEL / img_h
 
 # 去重IOU阈值：超过则视为重复框
 IOU_THRESHOLD = 0.3
@@ -51,15 +61,15 @@ MAX_REMOVE_THRESHOLD = 20
 REVIEW_MATCH_IOU = 0.3
 # 目标数异常告警阈值
 MIN_TARGETS = 5
-MAX_TARGETS = 80
+MAX_TARGETS = 500
 
 # 支持的图片扩展名
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp"}
 
 # API调用配置：MAX_RETRIES 为外层退避重试次数
-MAX_RETRIES = 4
-# 全局最小请求间隔（秒）：并发下仍保证任意两次请求间隔不小于该值，防限流
-GLOBAL_MIN_INTERVAL = 0.4
+MAX_RETRIES = 6
+# 全局最小请求间隔（秒）：并发下仍保证任意两次请求间隔不小于该值，防突发限流
+GLOBAL_MIN_INTERVAL = 1.0
 
 # 运行时由用户在启动阶段选择
 WORK_MODE = "annotate"   # annotate=自动标注  review=AI核查
@@ -324,11 +334,12 @@ def format_existing_labels_for_prompt(boxes: list[tuple[int, float, float, float
 # ── 提示词生成 ─────────────────────────────────────────────────────────
 def generate_annotate_prompt(img_w: int, img_h: int) -> str:
     """自动标注模式提示词（原有功能）"""
-    box_px = round(FIXED_BOX_W * img_w)
+    box_w, box_h = box_dims_for(img_w, img_h)
+    box_px = round(BOX_PIXEL)
     return f"""你是一名专业的精子头部标注工程师，标注精度要求≥99.5%。请逐一枚举图片中所有精子头部，输出标准YOLO格式坐标。
 
 【图像信息（最高优先级约束）】
-- 当前图像尺寸固定为 {img_w}×{img_h} 像素，正方形，无黑边、无padding、无letterbox
+- 当前图像实际尺寸为 {img_w}×{img_h} 像素（宽×高，宽高比约{img_w//100}:{img_h//100}），无黑边、无padding、无letterbox
 - 你输出的所有坐标必须基于这幅原始 {img_w}×{img_h} 图像
 - 禁止使用你内部缩放、补边、分块后的图像坐标系，必须在原始图幅上定位
 
@@ -362,9 +373,9 @@ def generate_annotate_prompt(img_w: int, img_h: int) -> str:
 3. 自查：最靠左的精子 xc 应接近 0，最靠右的接近 1，最上方的 yc 接近 0，最下方的接近 1；若所有坐标挤在一小块区域，说明你用错了坐标系，必须重算
 
 【输出格式】
-每一行严格为：0 xc yc 0.015625 0.015625
+每一行严格为：0 xc yc {box_w:.6f} {box_h:.6f}
 - xc, yc：归一化中心点坐标，0到1之间，保留6位小数
-- 框宽高固定为0.015625，不可修改
+- 框宽高固定为 {box_w:.6f} {box_h:.6f}，不可修改
 
 【输出要求】
 - 仅输出YOLO标签行，不要任何解释、说明、开场白、结束语、代码块标记
@@ -375,7 +386,8 @@ def generate_annotate_prompt(img_w: int, img_h: int) -> str:
 def generate_review_prompt(img_w: int, img_h: int,
                             existing_boxes: list[tuple[int, float, float, float, float]]) -> str:
     """AI核查模式提示词（只删减不新增版）：仅审核已有标注，删除错误框，不新增任何坐标"""
-    box_px = round(FIXED_BOX_W * img_w)
+    box_w, box_h = box_dims_for(img_w, img_h)
+    box_px = round(BOX_PIXEL)
     existing_text = format_existing_labels_for_prompt(existing_boxes, img_w, img_h)
     if existing_boxes:
         existing_section = f"""【已有标注（待审核，仅删减不新增）】
@@ -392,7 +404,7 @@ def generate_review_prompt(img_w: int, img_h: int,
     return f"""你是一名专业的精子头部标注审核工程师，审核精度要求≥99.5%。图片中已有初步标注坐标，请你审核并**仅删除错误标注**，不进行任何新增。
 
 【图像信息（最高优先级约束）】
-- 当前图像尺寸固定为 {img_w}×{img_h} 像素，正方形，无黑边、无padding、无letterbox
+- 当前图像实际尺寸为 {img_w}×{img_h} 像素（宽×高，宽高比约{img_w//100}:{img_h//100}），无黑边、无padding、无letterbox
 - 你输出的所有坐标必须基于这幅原始 {img_w}×{img_h} 图像
 - 禁止使用你内部缩放、补边、分块后的图像坐标系，必须在原始图幅上定位
 
@@ -433,9 +445,9 @@ def generate_review_prompt(img_w: int, img_h: int,
 6. 自查：输出数量 ≤ 已有标注数量，每个输出框都能在已有列表中找到对应
 
 【输出格式】
-每一行严格为：0 xc yc 0.015625 0.015625
+每一行严格为：0 xc yc {box_w:.6f} {box_h:.6f}
 - xc, yc：归一化中心点坐标，0到1之间，保留6位小数
-- 框宽高固定为0.015625，不可修改
+- 框宽高固定为 {box_w:.6f} {box_h:.6f}，不可修改
 
 【输出要求】
 - 仅输出保留下来的YOLO标签行，不要任何解释、说明、开场白、结束语、代码块标记
@@ -461,8 +473,8 @@ def read_image(file_path: str) -> tuple[np.ndarray, str]:
 
 
 def img_to_base64(img: np.ndarray) -> str:
-    """视觉无损压缩，不影响识别精度，减小传输体积"""
-    _, buffer = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    """视觉压缩，小目标4K图提高质量避免糊掉，减小传输体积"""
+    _, buffer = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
     return base64.b64encode(buffer).decode("utf-8")
 
 
@@ -514,7 +526,7 @@ def call_model(b64_data: str, img_w: int, img_h: int, img_name: str = "",
                 model=EP_ID,
                 temperature=0.0,
                 stream=True,
-                max_tokens=4096,
+                max_tokens=16000,
                 extra_body=extra_body,
                 messages=messages,
             )
@@ -543,7 +555,8 @@ def call_model(b64_data: str, img_w: int, img_h: int, img_name: str = "",
             last_error = e
             msg = str(e)
             is_rate_limit = ("429" in msg) or ("rate" in msg.lower()) \
-                or ("too many" in msg.lower())
+                or ("too many" in msg.lower()) or ("burst" in msg.lower())
+            is_burst = "burst" in msg.lower() or "RequestBurst" in msg
             is_thinking_err = ("thinking" in msg.lower()) or (
                 "parameter" in msg.lower() and "think" in msg.lower())
 
@@ -552,10 +565,19 @@ def call_model(b64_data: str, img_w: int, img_h: int, img_name: str = "",
                 use_thinking = False
                 continue
 
-            backoff = (6 if is_rate_limit else 2) * (2 ** (attempt - 1))
+            if is_rate_limit:
+                # 突发/QPS限流：端点可能处于冷却期，起点要足够长，指数退避+随机抖动，
+                # 避免冷却期内反复戳导致冷却不断延长
+                base = 20.0 if is_burst else 10.0
+                backoff = min(base * (2 ** (attempt - 1)), 120.0)
+                backoff = backoff * (0.7 + 0.6 * random.random())  # 抖动 ±30%
+            else:
+                backoff = min(2 * (2 ** (attempt - 1)), 30.0)
+
             if attempt < MAX_RETRIES:
-                safe_print(f"\n  ⚠️ 第{attempt}次调用失败({type(e).__name__}: {msg[:120]})，"
-                           f"{backoff}秒后重试...")
+                tag = "突发限流冷却中" if is_burst else "限流"
+                safe_print(f"\n  ⚠️ 第{attempt}次调用失败({tag} {type(e).__name__}: {msg[:120]})，"
+                           f"{int(backoff)}秒后重试...")
                 time.sleep(backoff)
             else:
                 raise last_error
@@ -591,6 +613,9 @@ def clean_yolo_output(text: str, img_w: int, img_h: int) -> list[str]:
     text = text.replace("```", "").replace("yolo", "").strip()
     text = text.replace(",", " ")
 
+    # 框宽高按实际图像尺寸自适应（约 BOX_PIXEL 像素见方）
+    box_w, box_h = box_dims_for(img_w, img_h)
+
     raw_boxes = []
     for line in text.splitlines():
         line = line.strip()
@@ -610,17 +635,29 @@ def clean_yolo_output(text: str, img_w: int, img_h: int) -> list[str]:
     if not raw_boxes:
         return []
 
-    # ── 坐标量纲自动识别 ──
-    over = sum(1 for _, x, y in raw_boxes if x > 1.05 or y > 1.05)
-    if raw_boxes and over > len(raw_boxes) * 0.5:
-        max_val = max(max(x, y) for _, x, y in raw_boxes)
-        if max_val > max(img_w, img_h) + 5:
-            raw_boxes = [(c, x / 1000.0, y / 1000.0) for c, x, y in raw_boxes]
-            scale_note = "0~1000"
-        else:
-            raw_boxes = [(c, x / img_w, y / img_h) for c, x, y in raw_boxes]
-            scale_note = "像素"
-        safe_print(f"\n  ⚠️ 检测到模型输出了{scale_note}量纲坐标，已自动换算为0~1归一化坐标")
+    # ── 坐标量纲自动识别（x、y 独立判断，处理模型混合输出）──
+    # 模型可能 x 用归一化、y 用像素（或反之），不能整批一刀切。
+    # 用中位数判断量纲，抗个别异常值干扰。
+    xs = [x for _, x, _ in raw_boxes]
+    ys = [y for _, _, y in raw_boxes]
+    x_med = sorted(xs)[len(xs) // 2]
+    y_med = sorted(ys)[len(ys) // 2]
+    x_is_pixel = x_med > 1.05
+    y_is_pixel = y_med > 1.05
+    if x_is_pixel or y_is_pixel:
+        notes = []
+        if x_is_pixel:
+            # 若最大值远超图像宽度，按 0~1000 量纲处理，否则按像素
+            x_max = max(xs)
+            div = 1000.0 if x_max > img_w + 5 else float(img_w)
+            raw_boxes = [(c, x / div, y) for c, x, y in raw_boxes]
+            notes.append(f"x像素(÷{int(div)})")
+        if y_is_pixel:
+            y_max = max(ys)
+            div = 1000.0 if y_max > img_h + 5 else float(img_h)
+            raw_boxes = [(c, x, y / div) for c, x, y in raw_boxes]
+            notes.append(f"y像素(÷{int(div)})")
+        safe_print(f"\n  ⚠️ 检测到模型输出{'+'.join(notes)}量纲坐标，已自动换算为0~1归一化坐标")
 
     filtered = []
     for cls, xc, yc in raw_boxes:
@@ -641,8 +678,8 @@ def clean_yolo_output(text: str, img_w: int, img_h: int) -> list[str]:
         for k_cls, k_xc, k_yc in keep_boxes:
             if cls != k_cls:
                 continue
-            iou = compute_iou(xc, yc, FIXED_BOX_W, FIXED_BOX_H,
-                              k_xc, k_yc, FIXED_BOX_W, FIXED_BOX_H)
+            iou = compute_iou(xc, yc, box_w, box_h,
+                              k_xc, k_yc, box_w, box_h)
             if iou > IOU_THRESHOLD:
                 duplicate = True
                 break
@@ -652,7 +689,7 @@ def clean_yolo_output(text: str, img_w: int, img_h: int) -> list[str]:
     valid_lines = []
     for cls, xc, yc in keep_boxes:
         valid_lines.append(
-            f"{cls} {xc:.6f} {yc:.6f} {FIXED_BOX_W:.6f} {FIXED_BOX_H:.6f}"
+            f"{cls} {xc:.6f} {yc:.6f} {box_w:.6f} {box_h:.6f}"
         )
 
     return valid_lines
@@ -688,6 +725,7 @@ def draw_review_box(img: np.ndarray, final_lines: list[str],
                     img_w: int, img_h: int) -> np.ndarray:
     """核查模式预览图：绿色=原有保留，蓝色=AI新增，红色=AI删除"""
     vis = img.copy()
+    box_w, box_h = box_dims_for(img_w, img_h)
 
     # 解析最终框的坐标集合
     final_coords = set()
@@ -708,7 +746,7 @@ def draw_review_box(img: np.ndarray, final_lines: list[str],
         # 判断是否被保留（与最终框IOU>0.3视为保留）
         kept = False
         for fxc, fyc in final_coords:
-            iou = compute_iou(xc, yc, w, h, fxc, fyc, FIXED_BOX_W, FIXED_BOX_H)
+            iou = compute_iou(xc, yc, w, h, fxc, fyc, box_w, box_h)
             if iou > 0.3:
                 kept = True
                 break
@@ -723,7 +761,7 @@ def draw_review_box(img: np.ndarray, final_lines: list[str],
         xc, yc = float(parts[1]), float(parts[2])
         is_new = True
         for cls, exc, eyc, ew, eh in existing_boxes:
-            iou = compute_iou(xc, yc, FIXED_BOX_W, FIXED_BOX_H,
+            iou = compute_iou(xc, yc, box_w, box_h,
                               exc, eyc, ew, eh)
             if iou > 0.3:
                 is_new = False
@@ -731,8 +769,8 @@ def draw_review_box(img: np.ndarray, final_lines: list[str],
         if is_new:
             cx = int(xc * img_w)
             cy = int(yc * img_h)
-            bw = int(FIXED_BOX_W * img_w)
-            bh = int(FIXED_BOX_H * img_h)
+            bw = int(box_w * img_w)
+            bh = int(box_h * img_h)
             x1, y1 = max(0, cx - bw // 2), max(0, cy - bh // 2)
             x2, y2 = min(img_w - 1, cx + bw // 2), min(img_h - 1, cy + bh // 2)
             cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 150, 0), 2)  # 蓝色=新增
@@ -859,10 +897,11 @@ def process_single_review(img_path: Path, src_label_dir: Path, out_label_dir: Pa
             # 找最匹配的原有框
             best_iou = 0.0
             best_idx = -1
+            ai_bw, ai_bh = box_dims_for(w_img, h_img)
             for idx, (ex_cls, ex_xc, ex_yc, ex_w, ex_h) in enumerate(existing_boxes):
                 if idx in matched_existing:
                     continue
-                iou = compute_iou(ai_xc, ai_yc, FIXED_BOX_W, FIXED_BOX_H,
+                iou = compute_iou(ai_xc, ai_yc, ai_bw, ai_bh,
                                   ex_xc, ex_yc, ex_w, ex_h)
                 if iou > best_iou:
                     best_iou = iou
@@ -870,7 +909,7 @@ def process_single_review(img_path: Path, src_label_dir: Path, out_label_dir: Pa
             if best_idx >= 0 and best_iou >= REVIEW_MATCH_IOU:
                 # AI确认保留此原有坐标，使用AI微调后的坐标
                 matched_existing.add(best_idx)
-                kept_boxes.append(f"{ai_cls} {ai_xc:.6f} {ai_yc:.6f} {FIXED_BOX_W:.6f} {FIXED_BOX_H:.6f}")
+                kept_boxes.append(f"{ai_cls} {ai_xc:.6f} {ai_yc:.6f} {ai_bw:.6f} {ai_bh:.6f}")
 
         valid_lines = kept_boxes
         num_removed = len(existing_boxes) - len(valid_lines)
